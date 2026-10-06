@@ -1,0 +1,14 @@
+ARG ANGELIC_ANGEL_REF=main
+FROM rust:1-slim AS builder
+ARG ANGELIC_ANGEL_REF
+RUN apt-get update && apt-get install -y --no-install-recommends git pkg-config libssl-dev ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 --branch "$ANGELIC_ANGEL_REF" https://github.com/sh1ma/Angelic-Angel.git /src
+WORKDIR /src
+RUN cargo build --release
+
+FROM debian:stable-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /src/target/release/angelic-angel /usr/local/bin/angelic-angel
+WORKDIR /config
+ENTRYPOINT ["angelic-angel"]
+CMD ["listen"]
