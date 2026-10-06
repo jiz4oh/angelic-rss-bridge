@@ -1,0 +1,38 @@
+services:
+  bridge:
+    build: .
+    restart: unless-stopped
+    environment:
+      FEED_TITLE: ${FEED_TITLE:-Angelic Angel}
+      FEED_LINK: ${FEED_LINK:-http://localhost:8080/rss}
+      MAX_ITEMS: ${MAX_ITEMS:-100}
+    volumes:
+      - bridge-data:/data
+    ports:
+      - "${BRIDGE_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  angelic-angel:
+    build:
+      context: .
+      dockerfile: Dockerfile.angelic-angel
+      args:
+        ANGELIC_ANGEL_REF: ${ANGELIC_ANGEL_REF:-main}
+    restart: unless-stopped
+    depends_on:
+      bridge:
+        condition: service_healthy
+    environment:
+      WEBHOOK_ENDPOINT: http://bridge:8080/webhook
+      RUST_LOG: ${RUST_LOG:-info}
+    volumes:
+      - angelic-config:/config
+    command: ["listen"]
+
+volumes:
+  bridge-data:
+  angelic-config:
