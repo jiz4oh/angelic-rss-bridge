@@ -20,9 +20,6 @@ services:
   angelic-angel:
     image: ghcr.io/jiz4oh/angelic-angel:latest
     restart: unless-stopped
-    depends_on:
-      bridge:
-        condition: service_healthy
     environment:
       WEBHOOK_ENDPOINT: http://bridge:${BRIDGE_PORT}/webhook
       RUST_LOG: ${RUST_LOG:-info}
