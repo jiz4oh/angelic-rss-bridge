@@ -28,9 +28,6 @@ def connect():
         link TEXT,
         payload TEXT NOT NULL
     )""")
-    columns = {row["name"] for row in db.execute("PRAGMA table_info(events)")}
-    if "username" not in columns:
-        db.execute("ALTER TABLE events ADD COLUMN username TEXT")
     db.execute(
         "CREATE INDEX IF NOT EXISTS idx_events_username_received_at "
         "ON events(username COLLATE NOCASE, received_at DESC)"
