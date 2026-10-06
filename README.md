@@ -105,7 +105,7 @@ All notifications remain in the same SQLite table. Per-account feeds are databas
 
 Existing `bridge.db` files are migrated automatically. The bridge adds the `username` column and account index on startup.
 
-Existing rows created by older bridge versions do not have a stored username, so they remain available in the combined `/rss` feed but cannot appear in a per-account feed. New notifications store the extracted username automatically.
+Existing rows created by older bridge versions do not have a stored username and therefore cannot appear in an account feed. New notifications store the extracted username automatically.
 
 ## Updating
 
@@ -124,7 +124,7 @@ The bind-mounted data directories remain unchanged during image updates.
 | --- | --- | --- |
 | `BRIDGE_PORT` | `8080` | Bridge listen port, published host port, internal webhook port, and healthcheck port |
 | `FEED_TITLE` | `Angelic Angel` | Base RSS channel title; account feeds append `@username` |
-| `FEED_LINK` | `http://host:8080/rss` | URL placed in RSS channel metadata |
+| `FEED_LINK` | `http://host:8080/rss` | Base URL placed in RSS channel metadata |
 | `MAX_ITEMS` | `100` | Maximum entries returned by each feed request |
 | `RUST_LOG` | `info` | Angelic Angel logging level |
 
@@ -132,7 +132,7 @@ The bind-mounted data directories remain unchanged during image updates.
 
 - `POST /webhook` receives decrypted notification JSON from Angelic Angel.
 - `GET /rss` and `GET /rss.xml` return the combined RSS feed.
-- `GET /rss/<username>` returns the RSS feed for one X account.
+- `GET /rss/<username>` returns the RSS feed for one X account. `/rss` without a username is not a feed endpoint.
 - `GET /health` checks the bridge and SQLite database.
 
 Duplicate events are ignored. The bridge stores the extracted X username with each new event and prefers tweet/status IDs as RSS GUIDs, falling back to a hash of the canonical JSON payload when no stable ID is available.
