@@ -5,7 +5,7 @@ A minimal webhook-to-RSS bridge for [Angelic Angel](https://github.com/sh1ma/Ang
 ## Architecture
 
 ```text
-Twitter/X -> Mozilla AutoPush -> Angelic Angel -> POST /webhook -> SQLite -> GET /rss -> RSStT -> Telegram
+Twitter/X -> Mozilla AutoPush -> Angelic Angel -> POST /webhook -> SQLite -> RSS -> RSStT -> Telegram
 ```
 
 Runtime deployment uses prebuilt images from GitHub Container Registry. No local image build is required.
@@ -18,9 +18,9 @@ Runtime deployment uses prebuilt images from GitHub Container Registry. No local
 ├── .env
 └── data
     ├── angelic-angel
-    │   └── angelic-angel.toml   # created by init
+    │   └── angelic-angel.toml
     └── bridge
-        └── bridge.db            # created automatically
+        └── bridge.db
 ```
 
 Both data directories are bind-mounted from the directory containing `compose.yml`. Runtime contents are ignored by Git.
@@ -33,39 +33,27 @@ Create the environment file:
 cp .env.example .env
 ```
 
-At minimum, configure the bridge port and public feed URL:
-
-```dotenv
-BRIDGE_PORT=8080
-FEED_LINK=http://YOUR_HOST:8080/rss
-```
-
-Pull the published images:
+Configure `.env`, then pull the published images:
 
 ```sh
 docker compose pull
 ```
 
-Initialize Angelic Angel. This creates `./data/angelic-angel/angelic-angel.toml`:
+Initialize Angelic Angel:
 
 ```sh
 docker compose run --rm angelic-angel \
   init --auth-token YOUR_AUTH_TOKEN --ct0 YOUR_CT0
 ```
 
-Register the Web Push subscription and persist it in the same config file:
+Register and verify the Web Push subscription:
 
 ```sh
 docker compose run --rm angelic-angel register
-```
-
-Verify the registration:
-
-```sh
 docker compose run --rm angelic-angel status
 ```
 
-Then start both long-running services:
+Start both services:
 
 ```sh
 docker compose up -d
@@ -78,7 +66,46 @@ docker compose ps
 docker compose logs -f bridge angelic-angel
 ```
 
-The RSS feed is available at the URL configured by `FEED_LINK`. Subscribe that URL in RSStT.
+## RSS feeds
+
+The bridge provides one combined feed plus per-account feeds.
+
+Combined feed:
+
+```text
+http://HOST:PORT/rss
+```
+
+This returns the most recent notifications across all accounts.
+
+Per-account feed:
+
+```text
+http://HOST:PORT/rss/<username>
+```
+
+For example:
+
+```text
+http://HOST:PORT/rss/alice
+http://HOST:PORT/rss/bob
+```
+
+The leading `@` is optional, so `/rss/@alice` is equivalent to `/rss/alice`. Username matching is case-insensitive.
+
+`MAX_ITEMS` applies independently to each feed request. With `MAX_ITEMS=100`:
+
+- `/rss` returns at most the latest 100 notifications globally.
+- `/rss/alice` returns at most the latest 100 notifications for `@alice`.
+- `/rss/bob` returns at most the latest 100 notifications for `@bob`.
+
+All notifications remain in the same SQLite table. Per-account feeds are database filters, not separate databases.
+
+## Existing databases
+
+Existing `bridge.db` files are migrated automatically. The bridge adds the `username` column and account index on startup.
+
+Existing rows created by older bridge versions do not have a stored username, so they remain available in the combined `/rss` feed but cannot appear in a per-account feed. New notifications store the extracted username automatically.
 
 ## Updating
 
@@ -89,36 +116,31 @@ docker compose pull
 docker compose up -d
 ```
 
-The bind-mounted `./data/angelic-angel` and `./data/bridge` directories remain unchanged during image updates, so normal updates do not require initialization or registration again.
+The bind-mounted data directories remain unchanged during image updates.
 
 ## Configuration
 
 | Variable | Example | Purpose |
 | --- | --- | --- |
-| `BRIDGE_PORT` | `8080` | Bridge listen port, container port, published host port, internal webhook port, and healthcheck port |
-| `FEED_TITLE` | `Angelic Angel` | RSS channel title |
-| `FEED_LINK` | `http://host:8080/rss` | Public RSS channel URL |
-| `MAX_ITEMS` | `100` | Maximum number of RSS items returned |
+| `BRIDGE_PORT` | `8080` | Bridge listen port, published host port, internal webhook port, and healthcheck port |
+| `FEED_TITLE` | `Angelic Angel` | Base RSS channel title; account feeds append `@username` |
+| `FEED_LINK` | `http://host:8080/rss` | URL placed in RSS channel metadata |
+| `MAX_ITEMS` | `100` | Maximum entries returned by each feed request |
 | `RUST_LOG` | `info` | Angelic Angel logging level |
-
-`BRIDGE_PORT` and `FEED_LINK` are defined in `.env`; Compose does not hard-code the bridge port.
 
 ## Endpoints
 
-The bridge exposes these paths on `BRIDGE_PORT`:
-
 - `POST /webhook` receives decrypted notification JSON from Angelic Angel.
-- `GET /rss` and `GET /rss.xml` return RSS 2.0.
+- `GET /rss` and `GET /rss.xml` return the combined RSS feed.
+- `GET /rss/<username>` returns the RSS feed for one X account.
 - `GET /health` checks the bridge and SQLite database.
 
-Duplicate events are ignored. The bridge prefers tweet/status IDs as RSS GUIDs and falls back to a hash of the canonical JSON payload when no stable ID is available.
+Duplicate events are ignored. The bridge stores the extracted X username with each new event and prefers tweet/status IDs as RSS GUIDs, falling back to a hash of the canonical JSON payload when no stable ID is available.
 
 ## Persistent data
 
 - `./data/angelic-angel/angelic-angel.toml` contains X credentials and Web Push registration state. Treat it as sensitive.
 - `./data/bridge/bridge.db` contains received events and RSS history.
-
-The bridge container writes directly to the bind-mounted data directory, so no host-side UID/GID preparation is required.
 
 ## Image publishing
 
