@@ -80,18 +80,13 @@ def store(payload):
         inserted = cursor.rowcount > 0
     return event_id, inserted
 
-def rss(username=None):
+def rss(username):
     with connect() as db:
-        if username:
-            rows = db.execute(
-                "SELECT * FROM events WHERE username = ? COLLATE NOCASE "
-                "ORDER BY received_at DESC LIMIT ?",
-                (username, MAX_ITEMS),
-            ).fetchall()
-        else:
-            rows = db.execute(
-                "SELECT * FROM events ORDER BY received_at DESC LIMIT ?", (MAX_ITEMS,)
-            ).fetchall()
+        rows = db.execute(
+            "SELECT * FROM events WHERE username = ? COLLATE NOCASE "
+            "ORDER BY received_at DESC LIMIT ?",
+            (username, MAX_ITEMS),
+        ).fetchall()
 
     items = []
     for row in rows:
@@ -107,7 +102,7 @@ def rss(username=None):
             + "</item>"
         )
 
-    feed_title = f"{FEED_TITLE} - @{username}" if username else FEED_TITLE
+    feed_title = f"{FEED_TITLE} - @{username}"
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<rss version="2.0"><channel>'
@@ -129,9 +124,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urlparse(self.path).path
-        if path in ("/rss", "/rss.xml"):
-            self.reply(200, rss(), "application/rss+xml; charset=utf-8")
-        elif path.startswith("/rss/") and len(path) > len("/rss/"):
+        if path.startswith("/rss/") and len(path) > len("/rss/"):
             username = unquote(path[len("/rss/"):]).lstrip("@").strip()
             if not username or "/" in username:
                 self.reply(404, b"not found\n")
