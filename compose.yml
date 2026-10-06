@@ -1,7 +1,6 @@
 services:
   bridge:
     image: ghcr.io/jiz4oh/angelic-rss-bridge:latest
-    build: .
     restart: unless-stopped
     environment:
       FEED_TITLE: ${FEED_TITLE:-Angelic Angel}
@@ -19,9 +18,6 @@ services:
 
   angelic-angel:
     image: ghcr.io/jiz4oh/angelic-angel:latest
-    build:
-      context: .
-      dockerfile: Dockerfile.angelic-angel
     restart: unless-stopped
     depends_on:
       bridge:
