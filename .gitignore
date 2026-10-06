@@ -1,3 +1,7 @@
 .env
 *.db
 __pycache__/
+data/bridge/*
+data/angelic-angel/*
+!data/bridge/.gitkeep
+!data/angelic-angel/.gitkeep
