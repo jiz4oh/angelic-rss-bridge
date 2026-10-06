@@ -8,14 +8,36 @@ A minimal webhook-to-RSS bridge for [Angelic Angel](https://github.com/sh1ma/Ang
 Twitter/X -> Mozilla AutoPush -> Angelic Angel -> POST /webhook -> SQLite -> GET /rss -> RSStT -> Telegram
 ```
 
-This repository tracks Angelic Angel as the `upstream/Angelic-Angel` Git submodule for image builds. Runtime deployment uses prebuilt images from GitHub Container Registry; no local build is required.
+Runtime deployment uses prebuilt images from GitHub Container Registry. No local image build is required.
 
-## Deploy with Docker Compose
+## Directory layout
 
-Download or copy `compose.yml` and `.env.example` from this repository, then create your environment file:
+```text
+.
+├── compose.yml
+├── .env
+└── data
+    ├── angelic-angel
+    │   └── angelic-angel.toml   # created by init
+    └── bridge
+        └── bridge.db            # created automatically
+```
+
+Both data directories are bind-mounted from the directory containing `compose.yml`. Runtime contents are ignored by Git.
+
+## First-time setup
+
+Create the environment file:
 
 ```sh
 cp .env.example .env
+```
+
+At minimum, configure the bridge port and public feed URL:
+
+```dotenv
+BRIDGE_PORT=8080
+FEED_LINK=http://YOUR_HOST:8080/rss
 ```
 
 Pull the published images:
@@ -24,68 +46,66 @@ Pull the published images:
 docker compose pull
 ```
 
-Initialize Angelic Angel with your X cookies:
+Initialize Angelic Angel. This creates `./data/angelic-angel/angelic-angel.toml`:
 
 ```sh
 docker compose run --rm angelic-angel \
   init --auth-token YOUR_AUTH_TOKEN --ct0 YOUR_CT0
 ```
 
-Register the Web Push subscription:
+Register the Web Push subscription and persist it in the same config file:
 
 ```sh
 docker compose run --rm angelic-angel register
 ```
 
-Start the bridge and listener:
+Verify the registration:
+
+```sh
+docker compose run --rm angelic-angel status
+```
+
+Then start both long-running services:
 
 ```sh
 docker compose up -d
 ```
 
-Check service state:
+Check service state and logs:
 
 ```sh
 docker compose ps
-docker compose run --rm angelic-angel status
-```
-
-Follow logs:
-
-```sh
 docker compose logs -f bridge angelic-angel
 ```
 
-The RSS feed is exposed at:
-
-```text
-http://HOST:8080/rss
-```
-
-Subscribe this URL in RSStT.
+The RSS feed is available at the URL configured by `FEED_LINK`. Subscribe that URL in RSStT.
 
 ## Updating
 
-Pull newly published images and recreate the containers:
+Pull new images and recreate the containers:
 
 ```sh
 docker compose pull
 docker compose up -d
 ```
 
-The `angelic-config` volume preserves Angelic Angel credentials and registration state, and `bridge-data` preserves RSS history, so normal image updates do not require reinitialization or re-registration.
+The bind-mounted `./data/angelic-angel` and `./data/bridge` directories remain unchanged during image updates, so normal updates do not require initialization or registration again.
 
 ## Configuration
 
-| Variable | Default | Purpose |
+| Variable | Example | Purpose |
 | --- | --- | --- |
-| `BRIDGE_PORT` | `8080` | Host port for the RSS bridge |
+| `BRIDGE_PORT` | `8080` | Bridge listen port, container port, published host port, internal webhook port, and healthcheck port |
 | `FEED_TITLE` | `Angelic Angel` | RSS channel title |
-| `FEED_LINK` | `http://localhost:8080/rss` | RSS channel link |
+| `FEED_LINK` | `http://host:8080/rss` | Public RSS channel URL |
 | `MAX_ITEMS` | `100` | Maximum number of RSS items returned |
 | `RUST_LOG` | `info` | Angelic Angel logging level |
 
+`BRIDGE_PORT` and `FEED_LINK` are defined in `.env`; Compose does not hard-code the bridge port.
+
 ## Endpoints
+
+The bridge exposes these paths on `BRIDGE_PORT`:
 
 - `POST /webhook` receives decrypted notification JSON from Angelic Angel.
 - `GET /rss` and `GET /rss.xml` return RSS 2.0.
@@ -95,12 +115,8 @@ Duplicate events are ignored. The bridge prefers tweet/status IDs as RSS GUIDs a
 
 ## Persistent data
 
-Docker Compose creates two named volumes:
-
-- `angelic-config`: stores `angelic-angel.toml`, including X credentials and Web Push registration state.
-- `bridge-data`: stores the SQLite database used by the RSS bridge.
-
-Treat `angelic-config` as sensitive.
+- `./data/angelic-angel/angelic-angel.toml` contains X credentials and Web Push registration state. Treat it as sensitive.
+- `./data/bridge/bridge.db` contains received events and RSS history.
 
 ## Image publishing
 
@@ -111,4 +127,4 @@ GitHub Actions publishes:
 
 The bridge image is rebuilt when bridge source or its Dockerfile changes.
 
-The Angelic Angel image is rebuilt when the tracked `upstream/Angelic-Angel` submodule pointer or `Dockerfile.angelic-angel` changes. A scheduled workflow checks the upstream `main` branch daily and advances the submodule pointer only when upstream has changed.
+The Angelic Angel image is rebuilt when the tracked `upstream/Angelic-Angel` submodule pointer or `Dockerfile.angelic-angel` changes. A scheduled workflow checks upstream daily and advances the submodule pointer only when upstream has changed.
