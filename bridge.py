@@ -7,7 +7,7 @@ import sqlite3
 from datetime import datetime, timezone
 from email.utils import format_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 DB_PATH = os.getenv("DB_PATH", "/data/bridge.db")
 HOST = os.getenv("HOST", "0.0.0.0")
@@ -22,11 +22,19 @@ def connect():
     db.execute("""CREATE TABLE IF NOT EXISTS events (
         id TEXT PRIMARY KEY,
         received_at TEXT NOT NULL,
+        username TEXT,
         title TEXT NOT NULL,
         body TEXT NOT NULL,
         link TEXT,
         payload TEXT NOT NULL
     )""")
+    columns = {row["name"] for row in db.execute("PRAGMA table_info(events)")}
+    if "username" not in columns:
+        db.execute("ALTER TABLE events ADD COLUMN username TEXT")
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_events_username_received_at "
+        "ON events(username COLLATE NOCASE, received_at DESC)"
+    )
     return db
 
 def walk(value):
@@ -47,34 +55,44 @@ def first(payload, keys):
     return None
 
 def normalize(payload):
+    username = first(payload, ("screen_name", "username"))
     title = first(payload, ("title", "screen_name", "username", "name")) or "X notification"
     body = first(payload, ("body", "text", "message", "content")) or json.dumps(payload, ensure_ascii=False)
     link = first(payload, ("url", "link", "uri", "target_url"))
     tweet_id = first(payload, ("tweet_id", "status_id", "rest_id"))
-    username = first(payload, ("screen_name", "username"))
     if not link and tweet_id:
         link = f"https://x.com/{username or 'i'}/status/{tweet_id}"
     stable = tweet_id or first(payload, ("id", "notification_id"))
     canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     event_id = stable or hashlib.sha256(canonical.encode()).hexdigest()
-    return event_id, title, body, link, canonical
+    return event_id, username, title, body, link, canonical
 
 def store(payload):
-    event_id, title, body, link, canonical = normalize(payload)
+    event_id, username, title, body, link, canonical = normalize(payload)
     now = datetime.now(timezone.utc).isoformat()
     with connect() as db:
-        db.execute(
-            "INSERT OR IGNORE INTO events(id, received_at, title, body, link, payload) VALUES(?,?,?,?,?,?)",
-            (event_id, now, title, body, link, canonical),
+        cursor = db.execute(
+            "INSERT OR IGNORE INTO events"
+            "(id, received_at, username, title, body, link, payload) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (event_id, now, username, title, body, link, canonical),
         )
-        inserted = db.total_changes > 0
+        inserted = cursor.rowcount > 0
     return event_id, inserted
 
-def rss():
+def rss(username=None):
     with connect() as db:
-        rows = db.execute(
-            "SELECT * FROM events ORDER BY received_at DESC LIMIT ?", (MAX_ITEMS,)
-        ).fetchall()
+        if username:
+            rows = db.execute(
+                "SELECT * FROM events WHERE username = ? COLLATE NOCASE "
+                "ORDER BY received_at DESC LIMIT ?",
+                (username, MAX_ITEMS),
+            ).fetchall()
+        else:
+            rows = db.execute(
+                "SELECT * FROM events ORDER BY received_at DESC LIMIT ?", (MAX_ITEMS,)
+            ).fetchall()
+
     items = []
     for row in rows:
         dt = datetime.fromisoformat(row["received_at"])
@@ -88,10 +106,12 @@ def rss():
             + (f"<link>{html.escape(link)}</link>" if link else "")
             + "</item>"
         )
+
+    feed_title = f"{FEED_TITLE} - @{username}" if username else FEED_TITLE
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<rss version="2.0"><channel>'
-        f"<title>{html.escape(FEED_TITLE)}</title>"
+        f"<title>{html.escape(feed_title)}</title>"
         f"<link>{html.escape(FEED_LINK)}</link>"
         "<description>Twitter/X notifications received by Angelic Angel</description>"
         + "".join(items)
@@ -111,6 +131,12 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path in ("/rss", "/rss.xml"):
             self.reply(200, rss(), "application/rss+xml; charset=utf-8")
+        elif path.startswith("/rss/") and len(path) > len("/rss/"):
+            username = unquote(path[len("/rss/"):]).lstrip("@").strip()
+            if not username or "/" in username:
+                self.reply(404, b"not found\n")
+                return
+            self.reply(200, rss(username), "application/rss+xml; charset=utf-8")
         elif path == "/health":
             try:
                 with connect() as db:
