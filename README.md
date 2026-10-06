@@ -101,12 +101,6 @@ The leading `@` is optional, so `/rss/@alice` is equivalent to `/rss/alice`. Use
 
 All notifications remain in the same SQLite table. Per-account feeds are database filters, not separate databases.
 
-## Existing databases
-
-Existing `bridge.db` files are migrated automatically. The bridge adds the `username` column and account index on startup.
-
-Existing rows created by older bridge versions do not have a stored username and therefore cannot appear in an account feed. New notifications store the extracted username automatically.
-
 ## Updating
 
 Pull new images and recreate the containers:
