@@ -118,6 +118,8 @@ Duplicate events are ignored. The bridge prefers tweet/status IDs as RSS GUIDs a
 - `./data/angelic-angel/angelic-angel.toml` contains X credentials and Web Push registration state. Treat it as sensitive.
 - `./data/bridge/bridge.db` contains received events and RSS history.
 
+The bridge container writes directly to the bind-mounted data directory, so no host-side UID/GID preparation is required.
+
 ## Image publishing
 
 GitHub Actions publishes:
