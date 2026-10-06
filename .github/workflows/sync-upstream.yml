@@ -1,0 +1,30 @@
+name: sync upstream
+
+on:
+  schedule:
+    - cron: "17 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+      - name: Update Angelic Angel submodule
+        run: |
+          git submodule update --init --remote upstream/Angelic-Angel
+          if git diff --quiet -- upstream/Angelic-Angel; then
+            echo "Upstream is already current."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add upstream/Angelic-Angel
+          git commit -m "chore: sync Angelic Angel upstream"
+          git push

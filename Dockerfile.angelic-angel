@@ -1,8 +1,6 @@
-ARG ANGELIC_ANGEL_REF=main
 FROM rust:1-slim AS builder
-ARG ANGELIC_ANGEL_REF
-RUN apt-get update && apt-get install -y --no-install-recommends git pkg-config libssl-dev ca-certificates && rm -rf /var/lib/apt/lists/*
-RUN git init /src && cd /src && git remote add origin https://github.com/sh1ma/Angelic-Angel.git && git fetch --depth 1 origin "$ANGELIC_ANGEL_REF" && git checkout --detach FETCH_HEAD
+RUN apt-get update && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY upstream/Angelic-Angel /src
 WORKDIR /src
 RUN cargo build --release
 

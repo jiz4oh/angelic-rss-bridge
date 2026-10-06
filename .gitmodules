@@ -1,0 +1,4 @@
+[submodule "upstream/Angelic-Angel"]
+	path = upstream/Angelic-Angel
+	url = https://github.com/sh1ma/Angelic-Angel.git
+	branch = main

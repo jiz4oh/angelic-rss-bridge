@@ -1,5 +1,6 @@
 services:
   bridge:
+    image: ghcr.io/jiz4oh/angelic-rss-bridge:latest
     build: .
     restart: unless-stopped
     environment:
@@ -17,11 +18,10 @@ services:
       retries: 3
 
   angelic-angel:
+    image: ghcr.io/jiz4oh/angelic-angel:latest
     build:
       context: .
       dockerfile: Dockerfile.angelic-angel
-      args:
-        ANGELIC_ANGEL_REF: ${ANGELIC_ANGEL_REF:-main}
     restart: unless-stopped
     depends_on:
       bridge:
