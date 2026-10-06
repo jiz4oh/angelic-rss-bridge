@@ -8,7 +8,9 @@ A minimal webhook-to-RSS bridge for [Angelic Angel](https://github.com/sh1ma/Ang
 Twitter/X -> Mozilla AutoPush -> Angelic Angel -> POST /webhook -> SQLite -> GET /rss -> RSStT -> Telegram
 ```
 
-This repository does not fork or modify Angelic Angel. Docker Compose builds Angelic Angel directly from its upstream Git repository and runs the bridge beside it.
+This repository does not fork or modify Angelic Angel. It tracks Angelic Angel as the `upstream/Angelic-Angel` Git submodule and runs the bridge beside it.
+
+The submodule is checked for upstream changes daily. When upstream changes, GitHub Actions advances the submodule pointer and publishes a new Angelic Angel container image.
 
 ## Quick start
 
@@ -21,6 +23,7 @@ cp .env.example .env
 Build the images:
 
 ```sh
+git submodule update --init --recursive
 docker compose build
 ```
 
@@ -82,16 +85,28 @@ It prefers tweet/status IDs for stable RSS GUIDs. If none exists, it hashes the 
 | `ANGELIC_ANGEL_REF` | `main` | Upstream Angelic Angel branch/tag to build |
 | `RUST_LOG` | `info` | Angelic Angel logging level |
 
-## Updating Angelic Angel
+## Upstream synchronization and container images
 
-The image is built from the upstream repository. Rebuild without changing this project:
+`upstream/Angelic-Angel` is a Git submodule tracking the upstream `main` branch.
+
+The `sync upstream` workflow runs daily and can also be started manually. It updates and commits the submodule pointer only when upstream has changed.
+
+The `build and publish` workflow publishes images to GitHub Container Registry:
+
+- `ghcr.io/jiz4oh/angelic-rss-bridge:latest` is rebuilt when bridge source or its Dockerfile changes.
+- `ghcr.io/jiz4oh/angelic-angel:latest` is rebuilt when the Angelic Angel submodule pointer or its Dockerfile changes.
+- Bridge builds also receive a Git commit SHA tag.
+- Angelic Angel builds also receive the tracked upstream commit SHA tag.
+
+Both build jobs use GitHub Actions BuildKit cache. A manual workflow dispatch can force either image to rebuild independently.
+
+To update the submodule manually:
 
 ```sh
-docker compose build --no-cache angelic-angel
-docker compose up -d angelic-angel
+git submodule update --init --remote upstream/Angelic-Angel
+git add upstream/Angelic-Angel
+git commit -m "chore: sync Angelic Angel upstream"
 ```
-
-For reproducible deployments, set `ANGELIC_ANGEL_REF` to a tag or commit-compatible branch instead of tracking `main`.
 
 ## Data
 
