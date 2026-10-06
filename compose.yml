@@ -3,15 +3,16 @@ services:
     image: ghcr.io/jiz4oh/angelic-rss-bridge:latest
     restart: unless-stopped
     environment:
+      PORT: ${BRIDGE_PORT}
       FEED_TITLE: ${FEED_TITLE:-Angelic Angel}
-      FEED_LINK: ${FEED_LINK:-http://localhost:8080/rss}
+      FEED_LINK: ${FEED_LINK}
       MAX_ITEMS: ${MAX_ITEMS:-100}
     volumes:
-      - bridge-data:/data
+      - ./data/bridge:/data
     ports:
-      - "${BRIDGE_PORT:-8080}:8080"
+      - "${BRIDGE_PORT}:${BRIDGE_PORT}"
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health')"]
+      test: ["CMD-SHELL", "python -c \"import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ['PORT'] + '/health')\""]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -23,12 +24,8 @@ services:
       bridge:
         condition: service_healthy
     environment:
-      WEBHOOK_ENDPOINT: http://bridge:8080/webhook
+      WEBHOOK_ENDPOINT: http://bridge:${BRIDGE_PORT}/webhook
       RUST_LOG: ${RUST_LOG:-info}
     volumes:
-      - angelic-config:/config
+      - ./data/angelic-angel:/config
     command: ["listen"]
-
-volumes:
-  bridge-data:
-  angelic-config:
