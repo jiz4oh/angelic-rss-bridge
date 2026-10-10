@@ -68,38 +68,20 @@ docker compose logs -f bridge angelic-angel
 
 ## RSS feeds
 
-The bridge provides one combined feed plus per-account feeds.
-
-Combined feed:
-
-```text
-http://HOST:PORT/rss
-```
-
-This returns the most recent notifications across all accounts.
-
-Per-account feed:
-
-```text
-http://HOST:PORT/rss/<username>
-```
-
-For example:
+The bridge exposes account-specific feeds only:
 
 ```text
 http://HOST:PORT/rss/alice
 http://HOST:PORT/rss/bob
 ```
 
-The leading `@` is optional, so `/rss/@alice` is equivalent to `/rss/alice`. Username matching is case-insensitive.
+The leading `@` is optional and usernames are matched case-insensitively. `/rss` and `/rss.xml` are not feed endpoints. `MAX_ITEMS` limits each account feed independently.
 
-`MAX_ITEMS` applies independently to each feed request. With `MAX_ITEMS=100`:
+## Tweet text enrichment
 
-- `/rss` returns at most the latest 100 notifications globally.
-- `/rss/alice` returns at most the latest 100 notifications for `@alice`.
-- `/rss/bob` returns at most the latest 100 notifications for `@bob`.
+When a notification contains a tweet ID, the bridge looks up the full post text using FxTwitter's `/2/status/{id}` API before saving it. Successful responses provide the canonical author username, full text, and post URL. On API errors or unavailable posts, the original notification is saved instead. A duplicate webhook for an un-enriched post triggers another lookup; enriched posts are not fetched again. No background retry worker is included.
 
-All notifications remain in the same SQLite table. Per-account feeds are database filters, not separate databases.
+This version requires a fresh database schema with an `enriched` column. Existing databases are not migrated automatically.
 
 ## Updating
 
@@ -121,11 +103,13 @@ The bind-mounted data directories remain unchanged during image updates.
 | `FEED_LINK` | `http://host:8080/rss` | Base URL placed in RSS channel metadata |
 | `MAX_ITEMS` | `100` | Maximum entries returned by each feed request |
 | `RUST_LOG` | `info` | Angelic Angel logging level |
+| `FXTWITTER_ENABLED` | `true` | Enable full-text lookup for tweet notifications |
+| `FXTWITTER_API_BASE` | `https://api.fxtwitter.com` | FxTwitter API host |
+| `FXTWITTER_TIMEOUT` | `5` | Lookup timeout in seconds |
 
 ## Endpoints
 
 - `POST /webhook` receives decrypted notification JSON from Angelic Angel.
-- `GET /rss` and `GET /rss.xml` return the combined RSS feed.
 - `GET /rss/<username>` returns the RSS feed for one X account. `/rss` without a username is not a feed endpoint.
 - `GET /health` checks the bridge and SQLite database.
 
