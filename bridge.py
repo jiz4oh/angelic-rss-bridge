@@ -123,16 +123,16 @@ def media_html(status):
 
 def description(body, details):
     if not details:
-        return html.escape(body).replace("\\n", "<br />")
+        return html.escape(body).replace("\n", "<br />")
     status = json.loads(details)
-    content = "<p>" + html.escape(body).replace("\\n", "<br />") + "</p>"
+    content = "<p>" + html.escape(body).replace("\n", "<br />") + "</p>"
     content += media_html(status)
     quote = status.get("quote")
     if isinstance(quote, dict) and isinstance(quote.get("text"), str):
         author = quote.get("author") or {}
         name = author.get("name") or author.get("screen_name") or "Quoted post"
         content += "<blockquote><p>" + html.escape(str(name)) + "</p><p>"
-        content += html.escape(quote["text"]).replace("\\n", "<br />") + "</p></blockquote>"
+        content += html.escape(quote["text"]).replace("\n", "<br />") + "</p></blockquote>"
     return content
 
 def store(payload):
