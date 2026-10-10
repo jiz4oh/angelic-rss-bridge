@@ -33,7 +33,8 @@ def connect():
         body TEXT NOT NULL,
         link TEXT,
         payload TEXT NOT NULL,
-        enriched INTEGER NOT NULL DEFAULT 0
+        enriched INTEGER NOT NULL DEFAULT 0,
+        details TEXT
     )""")
     db.execute(
         "CREATE INDEX IF NOT EXISTS idx_events_username_received_at "
@@ -77,7 +78,7 @@ def fetch_tweet(tweet_id):
         username = author.get("screen_name") if isinstance(author, dict) else None
         if username and not re.fullmatch(r"[A-Za-z0-9_]{1,15}", username):
             username = None
-        return {"body": status["text"], "username": username, "link": status.get("url")}
+        return {"body": status["text"], "username": username, "link": status.get("url"), "status": status}
     except (OSError, ValueError, TypeError, KeyError) as exc:
         logging.warning("FxTwitter lookup failed for %s: %s", tweet_id, exc)
         return None
@@ -99,6 +100,41 @@ def normalize(payload):
     event_id = stable or hashlib.sha256(canonical.encode()).hexdigest()
     return event_id, username, title, body, link, canonical, tweet_id
 
+def media_html(status):
+    media = status.get("media") or {}
+    if not isinstance(media, dict):
+        return ""
+    entries = media.get("all")
+    if not isinstance(entries, list):
+        entries = (media.get("photos") or []) + (media.get("videos") or [])
+    output = []
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url")
+        if not isinstance(url, str) or urlparse(url).scheme != "https":
+            continue
+        safe = html.escape(url, quote=True)
+        if item.get("type") == "photo":
+            output.append(f'<p><img src="{safe}" /></p>')
+        elif item.get("type") in ("video", "gif") and urlparse(url).path.lower().endswith(".mp4"):
+            output.append(f'<p><video controls><source src="{safe}" type="video/mp4" /></video></p>')
+    return "".join(output)
+
+def description(body, details):
+    if not details:
+        return html.escape(body).replace("\\n", "<br />")
+    status = json.loads(details)
+    content = "<p>" + html.escape(body).replace("\\n", "<br />") + "</p>"
+    content += media_html(status)
+    quote = status.get("quote")
+    if isinstance(quote, dict) and isinstance(quote.get("text"), str):
+        author = quote.get("author") or {}
+        name = author.get("name") or author.get("screen_name") or "Quoted post"
+        content += "<blockquote><p>" + html.escape(str(name)) + "</p><p>"
+        content += html.escape(quote["text"]).replace("\\n", "<br />") + "</p></blockquote>"
+    return content
+
 def store(payload):
     event_id, username, title, body, link, canonical, tweet_id = normalize(payload)
     now = datetime.now(timezone.utc).isoformat()
@@ -109,6 +145,7 @@ def store(payload):
 
     details = fetch_tweet(tweet_id)
     enriched = 1 if details else 0
+    details_json = json.dumps(details["status"], ensure_ascii=False) if details else None
     if details:
         username = details["username"] or username
         body = details["body"]
@@ -117,16 +154,16 @@ def store(payload):
     with connect() as db:
         cursor = db.execute(
             "INSERT OR IGNORE INTO events"
-            "(id, received_at, username, title, body, link, payload, enriched) "
-            "VALUES(?,?,?,?,?,?,?,?)",
-            (event_id, now, username, title, body, link, canonical, enriched),
+            "(id, received_at, username, title, body, link, payload, enriched, details) "
+            "VALUES(?,?,?,?,?,?,?,?,?)",
+            (event_id, now, username, title, body, link, canonical, enriched, details_json),
         )
         inserted = cursor.rowcount > 0
         if not inserted and enriched:
             db.execute(
-                "UPDATE events SET username=?, body=?, link=?, enriched=1 "
+                "UPDATE events SET username=?, body=?, link=?, enriched=1, details=? "
                 "WHERE id=? AND enriched=0",
-                (username, body, link, event_id),
+                (username, body, link, details_json, event_id),
             )
     return event_id, inserted
 
