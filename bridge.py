@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from email.utils import format_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
+import re
 
 DB_PATH = os.getenv("DB_PATH", "/data/bridge.db")
 HOST = os.getenv("HOST", "0.0.0.0")
@@ -52,10 +53,14 @@ def first(payload, keys):
     return None
 
 def normalize(payload):
-    username = first(payload, ("screen_name", "username"))
+    uri = payload.get("data", {}).get("uri") if isinstance(payload.get("data"), dict) else None
+    match = re.match(r"^/(?:@)?([A-Za-z0-9_]{1,15})/status/\\d+(?:[/?#].*)?$", uri) if isinstance(uri, str) else None
+    username = match.group(1) if match else first(payload, ("screen_name", "username"))
     title = first(payload, ("title", "screen_name", "username", "name")) or "X notification"
     body = first(payload, ("body", "text", "message", "content")) or json.dumps(payload, ensure_ascii=False)
     link = first(payload, ("url", "link", "uri", "target_url"))
+    if isinstance(link, str) and link.startswith("/"):
+        link = "https://x.com" + link
     tweet_id = first(payload, ("tweet_id", "status_id", "rest_id"))
     if not link and tweet_id:
         link = f"https://x.com/{username or 'i'}/status/{tweet_id}"
