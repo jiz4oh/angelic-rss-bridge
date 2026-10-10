@@ -81,7 +81,11 @@ The leading `@` is optional and usernames are matched case-insensitively. `/rss`
 
 When a notification contains a tweet ID, the bridge looks up the full post text using FxTwitter's `/2/status/{id}` API before saving it. Successful responses provide the canonical author username, full text, and post URL. On API errors or unavailable posts, the original notification is saved instead. A duplicate webhook for an un-enriched post triggers another lookup; enriched posts are not fetched again. No background retry worker is included.
 
-This version requires a fresh database schema with an `enriched` column. Existing databases are not migrated automatically.
+This version requires a fresh database schema with `enriched` and `details` columns. Existing databases are not migrated automatically.
+
+## RSS media and quoted posts
+
+FxTwitter response details are stored as JSON in SQLite. The RSS `description` contains escaped HTML: full post text, HTTPS image tags, MP4 video tags, and a blockquote with the quoted author's name and text. Quoted-post media is not expanded. If enrichment fails, the feed retains the notification text without media.
 
 ## Updating
 
