@@ -7,6 +7,9 @@ services:
       FEED_TITLE: ${FEED_TITLE:-Angelic Angel}
       FEED_LINK: ${FEED_LINK}
       MAX_ITEMS: ${MAX_ITEMS:-100}
+      FXTWITTER_ENABLED: ${FXTWITTER_ENABLED:-true}
+      FXTWITTER_API_BASE: ${FXTWITTER_API_BASE:-https://api.fxtwitter.com}
+      FXTWITTER_TIMEOUT: ${FXTWITTER_TIMEOUT:-5}
     volumes:
       - ./data/bridge:/data
     ports:
