@@ -79,29 +79,29 @@ The leading `@` is optional and usernames are matched case-insensitively. `/rss`
 
 ## Tweet text enrichment
 
-When a notification contains a tweet ID, the bridge looks up the full post text using FxTwitter's `/2/status/{id}` API before saving it. Successful responses provide the canonical author username, full text, and post URL. On API errors or unavailable posts, the original notification is saved instead. A duplicate webhook for an un-enriched post triggers another lookup; enriched posts are not fetched again. No background retry worker is included.
+When a notification contains a tweet ID, the bridge looks up the full post text using FxTwitter's `/2/status/{id}` API before saving it. Successful responses provide the canonical author username, full text, and post URL. On API errors or unavailable posts, the original notification is saved instead. A duplicate webhook for an un-enriched post triggers another lookup; enriched posts are not fetched again. The embedded background retry thread handles transient failures.
 
-This version requires a fresh database schema with `enriched` and `details` columns. Existing databases are not migrated automatically.
+This version requires a fresh database schema with `enriched` and `details` columns. Existing databases are migrated automatically with retry-state columns.
 
 ## Automatic FxTwitter retry worker
 
 The webhook attempts a transiently failing FxTwitter request up to **three times total**, waiting 1 and 2 seconds between attempts. If all attempts fail, it immediately stores the original notification as `enriched=0`.
 
-A separate `retry-worker` container checks SQLite every **60 seconds**, and schedules another enrichment after **5, 10, and 20 minutes** (up to three worker runs per event, with at most three HTTP attempts per run). Successful enrichment updates the same event in place. Persistent failures keep the original notification; the worker stops retrying that event. Existing unenriched historical notifications with identifiable tweet IDs are scheduled on worker startup. The schedule survives container restarts.
+A background retry thread inside the `bridge` service checks SQLite every **60 seconds**, and schedules another enrichment after **5, 10, and 20 minutes** (up to three worker runs per event, with at most three HTTP attempts per run). Successful enrichment updates the same event in place. Persistent failures keep the original notification; the worker stops retrying that event. Existing unenriched historical notifications with identifiable tweet IDs are scheduled on worker startup. The schedule survives container restarts.
 
 Deploy the new image and compose configuration:
 
 ```sh
-docker compose pull bridge retry-worker
-docker compose up -d bridge retry-worker
-docker compose logs -f retry-worker
+docker compose pull bridge
+docker compose up -d --remove-orphans
+docker compose logs -f bridge
 ```
 
-Configuration: `FXTWITTER_WORKER_INTERVAL` (default 60 seconds) and `FXTWITTER_RETRY_BASE_SECONDS` (default 300 seconds). Two extra SQLite columns, `retry_count` and `next_retry_at`, are added automatically. Back up your database before updating.
+Configuration: `FXTWITTER_WORKER_INTERVAL` (default 60 seconds) and `FXTWITTER_RETRY_BASE_SECONDS` (default 300 seconds). SQLite retry-state and claim columns are added automatically. Back up your database before updating.
 
-The worker and one-time script now share `bridge.enrich_event()` for tweet ID lookup, SQLite claiming, FxTwitter fetching, and success/failure updates. An expiring claim prevents normal concurrent processing; a stopped worker can be retried after the lease expires. Manual runs can explicitly retry exhausted records without consuming or resetting the automatic retry budget. All enrichment attempts print tweet ID, source, attempt, backoff, and outcome to container logs; no full notification payload is logged.
+The embedded worker and one-time script share `bridge.enrich_event()` for tweet ID lookup, SQLite claiming, FxTwitter fetching, and success/failure updates. An expiring claim prevents normal concurrent processing; a stopped worker can be retried after the lease expires. Manual runs can explicitly retry exhausted records without consuming or resetting the automatic retry budget. All enrichment attempts print tweet ID, source, attempt, backoff, and outcome to container logs; no full notification payload is logged.
 
-View worker retry logs with `docker compose logs -f retry-worker`, or live webhook request attempts with `docker compose logs -f bridge`.
+View both worker and webhook retry logs with `docker compose logs -f bridge`.
 
 ## One-time historical enrichment
 
@@ -127,9 +127,9 @@ FxTwitter response details are stored as JSON in SQLite. The RSS `description` c
 
 ## RSSHub-style feed output for RSStT
 
-The per-account RSS channel links to `https://fxtwitter.com/<username>`. Each item uses a FxTwitter permalink when a valid author handle and numeric tweet ID are available, falling back to the notification URL otherwise. The RSS GUID remains the stable tweet ID to prevent duplicate Telegram posts when the link changes.
+The per-account RSS channel links to `https://x.com/<username>`. Each item prefers its original X link and falls back to an `x.com` tweet permalink. The RSS GUID remains the stable tweet ID to prevent duplicate Telegram posts when the link changes.
 
-Enriched items include the author's display name and text in the title, the original tweet timestamp, an author field, hashtag categories, HTML images with alt text, and direct MP4 video sources selected from FxTwitter's variants. Replies receive a title prefix. Quoted posts show the quoted author's name, text, and a FxTwitter link, but not quoted media.
+Enriched items include the author's display name and text in the title, the original tweet timestamp, an author field, hashtag categories, HTML images with alt text, and direct MP4 video sources selected from FxTwitter's variants. Replies receive a title prefix. Quoted posts show the quoted author's name, text, and an X link, but not quoted media.
 
 RSStT can extract media from HTML descriptions; enable media for the subscription. This bridge does not download or transcode media, and RSStT delivery depends on media URL accessibility. Notifications without FxTwitter details still appear as text-only RSS entries.
 
