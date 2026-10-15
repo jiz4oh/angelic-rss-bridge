@@ -83,6 +83,24 @@ When a notification contains a tweet ID, the bridge looks up the full post text 
 
 This version requires a fresh database schema with `enriched` and `details` columns. Existing databases are not migrated automatically.
 
+## One-time historical enrichment
+
+Backfill previously received notifications whose `enriched` field is 0, reusing the normal FxTwitter lookup and RSS rendering. Run this after deploying an image that contains `/app/scripts/enrich_history.py`. The task is not scheduled.
+
+Back up the SQLite database first, then preview the candidate rows:
+
+```sh
+docker compose run --rm --no-deps bridge python /app/scripts/enrich_history.py --dry-run
+```
+
+Execute the backfill (0.5-second delay between requests by default):
+
+```sh
+docker compose run --rm --no-deps bridge python /app/scripts/enrich_history.py
+```
+
+Use `--limit 20` for a small first batch, or `--delay 1` to slow API requests. Successful rows receive full text and JSON details; failed requests remain unenriched and can be retried by rerunning the task. Historical hash IDs are preserved; run any planned ID/username SQL migration separately. To avoid concurrent database writes during bulk maintenance, stop the bridge service first and restart it afterward.
+
 ## RSS media and quoted posts
 
 FxTwitter response details are stored as JSON in SQLite. The RSS `description` contains escaped HTML: full post text, HTTPS image tags, MP4 video tags, and a blockquote with the quoted author's name and text. Quoted-post media is not expanded. If enrichment fails, the feed retains the notification text without media.
