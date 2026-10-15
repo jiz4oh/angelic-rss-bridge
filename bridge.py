@@ -377,7 +377,14 @@ def rss(username):
         except (ValueError, TypeError):
             notification_body = None
         title_source = notification_body if isinstance(notification_body, str) and notification_body.strip() else body
-        title = " ".join(title_source.split())[:100]
+        display_name = str(author.get("name") or row["title"] or handle or "").strip()
+        prefix = f"{display_name}: " if display_name else ""
+        if len(prefix) >= 30:
+            title = prefix[:29].rstrip() + "…"
+        else:
+            text = " ".join(title_source.split())
+            available = 30 - len(prefix)
+            title = prefix + (text if len(text) <= available else text[:available - 1].rstrip() + "…")
         dt = tweet_date(status, datetime.fromisoformat(row["received_at"]))
         item = [
             "<item>",
