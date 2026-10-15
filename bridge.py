@@ -9,7 +9,7 @@ from urllib.request import Request, urlopen
 from datetime import datetime, timezone
 from email.utils import format_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlparse, quote
 import re
 
 DB_PATH = os.getenv("DB_PATH", "/data/bridge.db")
@@ -100,6 +100,11 @@ def normalize(payload):
     event_id = stable or hashlib.sha256(canonical.encode()).hexdigest()
     return event_id, username, title, body, link, canonical, tweet_id
 
+def fxtwitter_link(username, tweet_id):
+    if username and tweet_id and re.fullmatch(r"[A-Za-z0-9_]{1,15}", username) and str(tweet_id).isdigit():
+        return f"https://fxtwitter.com/{username}/status/{tweet_id}"
+    return None
+
 def media_html(status):
     media = status.get("media") or {}
     if not isinstance(media, dict):
@@ -108,32 +113,66 @@ def media_html(status):
     if not isinstance(entries, list):
         entries = (media.get("photos") or []) + (media.get("videos") or [])
     output = []
+    seen = set()
     for item in entries:
         if not isinstance(item, dict):
             continue
-        url = item.get("url")
-        if not isinstance(url, str) or urlparse(url).scheme != "https":
-            continue
-        safe = html.escape(url, quote=True)
-        if item.get("type") == "photo":
-            output.append(f'<p><img src="{safe}" /></p>')
-        elif item.get("type") in ("video", "gif") and urlparse(url).path.lower().endswith(".mp4"):
-            output.append(f'<p><video controls><source src="{safe}" type="video/mp4" /></video></p>')
+        kind = item.get("type")
+        if kind == "photo":
+            url = item.get("url")
+            if not isinstance(url, str) or urlparse(url).scheme != "https" or url in seen:
+                continue
+            seen.add(url)
+            alt = html.escape(str(item.get("altText") or ""), quote=True)
+            output.append(f'<p><img src="{html.escape(url, quote=True)}" alt="{alt}" /></p>')
+        elif kind in ("video", "gif"):
+            variants = item.get("formats") or []
+            mp4 = [v for v in variants if isinstance(v, dict) and v.get("container") == "mp4" and isinstance(v.get("url"), str) and urlparse(v["url"]).scheme == "https"]
+            mp4.sort(key=lambda v: v.get("bitrate") or 0, reverse=True)
+            url = mp4[0]["url"] if mp4 else item.get("url")
+            if not isinstance(url, str) or urlparse(url).scheme != "https" or not urlparse(url).path.lower().endswith(".mp4") or url in seen:
+                continue
+            seen.add(url)
+            poster = item.get("thumbnail_url")
+            poster_attr = f' poster="{html.escape(poster, quote=True)}"' if isinstance(poster, str) and urlparse(poster).scheme == "https" else ""
+            output.append(f'<p><video controls{poster_attr}><source src="{html.escape(url, quote=True)}" type="video/mp4" /></video></p>')
     return "".join(output)
 
 def description(body, details):
-    if not details:
-        return html.escape(body).replace("\n", "<br />")
-    status = json.loads(details)
     content = "<p>" + html.escape(body).replace("\n", "<br />") + "</p>"
+    if not details:
+        return content
+    status = json.loads(details)
+    if not isinstance(status, dict):
+        return content
     content += media_html(status)
-    quote = status.get("quote")
-    if isinstance(quote, dict) and isinstance(quote.get("text"), str):
-        author = quote.get("author") or {}
-        name = author.get("name") or author.get("screen_name") or "Quoted post"
-        content += "<blockquote><p>" + html.escape(str(name)) + "</p><p>"
-        content += html.escape(quote["text"]).replace("\n", "<br />") + "</p></blockquote>"
+    quoted = status.get("quote")
+    if isinstance(quoted, dict) and isinstance(quoted.get("text"), str):
+        author = quoted.get("author") or {}
+        if not isinstance(author, dict):
+            author = {}
+        name = str(author.get("name") or author.get("screen_name") or "Quoted post")
+        handle = author.get("screen_name")
+        quote_link = fxtwitter_link(handle, quoted.get("id"))
+        label = html.escape(name)
+        if quote_link:
+            label = f'<a href="{html.escape(quote_link, quote=True)}">{label}</a>'
+        content += f"<blockquote><p><strong>{label}</strong></p><p>"
+        content += html.escape(quoted["text"]).replace("\n", "<br />") + "</p></blockquote>"
     return content
+
+def tweet_date(status, fallback):
+    stamp = status.get("created_timestamp")
+    if isinstance(stamp, (int, float)) and stamp > 0:
+        try:
+            return datetime.fromtimestamp(stamp, timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            pass
+    return fallback
+
+def hashtags(text):
+    return list(dict.fromkeys(re.findall(r"(?<!\\w)#([\\w]+)", text, flags=re.UNICODE)))
+
 
 def store(payload):
     event_id, username, title, body, link, canonical, tweet_id = normalize(payload)
@@ -169,13 +208,54 @@ def store(payload):
 
 def rss(username):
     with connect() as db:
-        rows = db.execute("SELECT * FROM events WHERE username = ? COLLATE NOCASE ORDER BY received_at DESC LIMIT ?", (username, MAX_ITEMS)).fetchall()
+        rows = db.execute(
+            "SELECT * FROM events WHERE username = ? COLLATE NOCASE ORDER BY received_at DESC LIMIT ?",
+            (username, MAX_ITEMS),
+        ).fetchall()
     items = []
     for row in rows:
-        dt = datetime.fromisoformat(row["received_at"])
-        link = row["link"] or ""
-        items.append("<item>" + f'<guid isPermaLink="false">{html.escape(row["id"])}</guid>' + f'<title>{html.escape(row["title"])}</title>' + f'<description>{html.escape(description(row["body"], row["details"]))}</description>' + f'<pubDate>{format_datetime(dt)}</pubDate>' + (f"<link>{html.escape(link)}</link>" if link else "") + "</item>")
-    return ('<?xml version="1.0" encoding="UTF-8"?>' + '<rss version="2.0"><channel>' + f"<title>{html.escape(FEED_TITLE + ' - @' + username)}</title>" + f"<link>{html.escape(FEED_LINK)}</link>" + "<description>Twitter/X notifications received by Angelic Angel</description>" + "".join(items) + "</channel></rss>").encode()
+        status = json.loads(row["details"]) if row["details"] else {}
+        if not isinstance(status, dict):
+            status = {}
+        author = status.get("author") or {}
+        if not isinstance(author, dict):
+            author = {}
+        handle = author.get("screen_name") or row["username"]
+        display_name = str(author.get("name") or row["title"])
+        tweet_id = status.get("id") or row["id"]
+        link = fxtwitter_link(handle, tweet_id) or row["link"] or ""
+        body = row["body"]
+        title = f"{display_name}: {body.replace(chr(10), ' ').strip()}"
+        if status.get("replying_to"):
+            title = "↩️ " + title
+        dt = tweet_date(status, datetime.fromisoformat(row["received_at"]))
+        item = [
+            "<item>",
+            f'<guid isPermaLink="false">{html.escape(row["id"])}</guid>',
+            f"<title>{html.escape(title[:240])}</title>",
+            f"<description>{html.escape(description(body, row['details']))}</description>",
+            f"<pubDate>{format_datetime(dt)}</pubDate>",
+        ]
+        if link:
+            item.append(f"<link>{html.escape(link)}</link>")
+        if handle and re.fullmatch(r"[A-Za-z0-9_]{1,15}", handle):
+            item.append(f"<author>{html.escape('@' + handle)}</author>")
+        for tag in hashtags(body):
+            item.append(f"<category>{html.escape(tag)}</category>")
+        item.append("</item>")
+        items.append("".join(item))
+    feed_title = f"{FEED_TITLE} - @{username}"
+    feed_link = f"https://fxtwitter.com/{username}"
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<rss version="2.0"><channel>'
+        f"<title>{html.escape(feed_title)}</title>"
+        f"<link>{html.escape(feed_link)}</link>"
+        "<description>Twitter/X notifications received by Angelic Angel</description>"
+        + "".join(items)
+        + "</channel></rss>"
+    ).encode()
+
 
 class Handler(BaseHTTPRequestHandler):
     def reply(self, status, body=b"", content_type="text/plain; charset=utf-8"):
