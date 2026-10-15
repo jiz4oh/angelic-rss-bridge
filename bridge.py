@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse, quote
 import re
 import time
+import threading
 import uuid
 from pathlib import Path
 from datetime import timedelta
@@ -450,10 +451,35 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print(f"{self.address_string()} - {fmt % args}", flush=True)
 
+def run_retry_worker(stop_event):
+    if FXTWITTER_WORKER_INTERVAL < 1:
+        logging.error("FXTWITTER_WORKER_INTERVAL must be positive")
+        return
+    try:
+        schedule_legacy()
+    except Exception:
+        logging.exception("Failed to schedule legacy retries")
+    while not stop_event.is_set():
+        try:
+            updated = retry_pending()
+            if updated:
+                logging.info("Retry worker enriched %d events", updated)
+        except Exception:
+            logging.exception("Retry worker iteration failed")
+        stop_event.wait(FXTWITTER_WORKER_INTERVAL)
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
     with connect():
         pass
-    print(f"listening on {HOST}:{PORT}", flush=True)
-    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
+    stop_event = threading.Event()
+    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    threading.Thread(target=run_retry_worker, args=(stop_event,), name="retry-worker", daemon=True).start()
+    logging.info("listening on %s:%s with retry worker", HOST, PORT)
+    try:
+        server.serve_forever()
+    finally:
+        stop_event.set()
+        server.server_close()
