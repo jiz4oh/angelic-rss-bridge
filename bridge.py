@@ -11,6 +11,7 @@ from email.utils import format_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse, quote
 import re
+import time
 
 DB_PATH = os.getenv("DB_PATH", "/data/bridge.db")
 HOST = os.getenv("HOST", "0.0.0.0")
@@ -21,6 +22,8 @@ MAX_ITEMS = int(os.getenv("MAX_ITEMS", "100"))
 FXTWITTER_ENABLED = os.getenv("FXTWITTER_ENABLED", "true").lower() in ("true", "1", "yes")
 FXTWITTER_API_BASE = os.getenv("FXTWITTER_API_BASE", "https://api.fxtwitter.com").rstrip("/")
 FXTWITTER_TIMEOUT = float(os.getenv("FXTWITTER_TIMEOUT", "5"))
+FXTWITTER_WORKER_INTERVAL = int(os.getenv("FXTWITTER_WORKER_INTERVAL", "60"))
+FXTWITTER_RETRY_BASE_SECONDS = int(os.getenv("FXTWITTER_RETRY_BASE_SECONDS", "300"))
 
 def connect():
     db = sqlite3.connect(DB_PATH)
@@ -34,8 +37,15 @@ def connect():
         link TEXT,
         payload TEXT NOT NULL,
         enriched INTEGER NOT NULL DEFAULT 0,
-        details TEXT
+        details TEXT,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        next_retry_at TEXT
     )""")
+    columns = {row["name"] for row in db.execute("PRAGMA table_info(events)")}
+    if "retry_count" not in columns:
+        db.execute("ALTER TABLE events ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0")
+    if "next_retry_at" not in columns:
+        db.execute("ALTER TABLE events ADD COLUMN next_retry_at TEXT")
     db.execute(
         "CREATE INDEX IF NOT EXISTS idx_events_username_received_at "
         "ON events(username COLLATE NOCASE, received_at DESC)"
@@ -62,26 +72,84 @@ def first(payload, keys):
 def fetch_tweet(tweet_id):
     if not FXTWITTER_ENABLED or not tweet_id or not tweet_id.isdigit():
         return None
-    try:
-        request = Request(
-            f"{FXTWITTER_API_BASE}/2/status/{tweet_id}",
-            headers={"User-Agent": "angelic-rss-bridge/1.0", "Accept": "application/json"},
-        )
-        with urlopen(request, timeout=FXTWITTER_TIMEOUT) as response:
-            result = json.load(response)
-        status = result.get("status")
-        if result.get("code") != 200 or not isinstance(status, dict):
-            return None
-        if str(status.get("id")) != tweet_id or not isinstance(status.get("text"), str):
-            return None
-        author = status.get("author") or {}
-        username = author.get("screen_name") if isinstance(author, dict) else None
-        if username and not re.fullmatch(r"[A-Za-z0-9_]{1,15}", username):
-            username = None
-        return {"body": status["text"], "username": username, "link": status.get("url"), "status": status}
-    except (OSError, ValueError, TypeError, KeyError) as exc:
-        logging.warning("FxTwitter lookup failed for %s: %s", tweet_id, exc)
-        return None
+    for attempt in range(3):
+        try:
+            request = Request(
+                f"{FXTWITTER_API_BASE}/2/status/{tweet_id}",
+                headers={"User-Agent": "angelic-rss-bridge/1.0", "Accept": "application/json"},
+            )
+            with urlopen(request, timeout=FXTWITTER_TIMEOUT) as response:
+                result = json.load(response)
+            status = result.get("status")
+            if result.get("code") != 200 or not isinstance(status, dict):
+                return None
+            if str(status.get("id")) != tweet_id or not isinstance(status.get("text"), str):
+                return None
+            author = status.get("author") or {}
+            username = author.get("screen_name") if isinstance(author, dict) else None
+            if username and not re.fullmatch(r"[A-Za-z0-9_]{1,15}", username):
+                username = None
+            return {"body": status["text"], "username": username, "link": status.get("url"), "status": status}
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            logging.warning("FxTwitter %s attempt %s/3: %s", tweet_id, attempt + 1, exc)
+            if attempt < 2:
+                time.sleep(2 ** attempt)
+    return None
+
+def next_retry_at(retry_count):
+    from datetime import timedelta
+    return (datetime.now(timezone.utc) + timedelta(
+        seconds=FXTWITTER_RETRY_BASE_SECONDS * (2 ** retry_count)
+    )).isoformat()
+
+def retry_pending(batch_size=20):
+    if not FXTWITTER_ENABLED:
+        return 0
+    with connect() as db:
+        rows = db.execute(
+            """SELECT id, payload, retry_count FROM events
+               WHERE enriched=0 AND retry_count < 3
+               AND next_retry_at IS NOT NULL AND next_retry_at <= ?
+               ORDER BY next_retry_at LIMIT ?""",
+            (datetime.now(timezone.utc).isoformat(), batch_size),
+        ).fetchall()
+    completed = 0
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"])
+            tweet_id = normalize(payload)[-1] if isinstance(payload, dict) else None
+        except (ValueError, TypeError, AttributeError):
+            tweet_id = None
+        if not tweet_id or not tweet_id.isdigit():
+            continue
+        with connect() as db:
+            claimed = db.execute(
+                """UPDATE events SET next_retry_at=NULL
+                   WHERE id=? AND enriched=0 AND retry_count=?
+                   AND next_retry_at IS NOT NULL AND next_retry_at<=?""",
+                (row["id"], row["retry_count"], datetime.now(timezone.utc).isoformat()),
+            ).rowcount
+        if not claimed:
+            continue
+        details = fetch_tweet(tweet_id)
+        with connect() as db:
+            if details:
+                changed = db.execute(
+                    """UPDATE events SET username=COALESCE(?,username), body=?,
+                       link=COALESCE(?,link), details=?, enriched=1, next_retry_at=NULL
+                       WHERE id=? AND enriched=0""",
+                    (details["username"], details["body"], details["link"],
+                     json.dumps(details["status"], ensure_ascii=False), row["id"]),
+                ).rowcount
+                completed += changed
+            else:
+                count = row["retry_count"] + 1
+                db.execute(
+                    """UPDATE events SET retry_count=?, next_retry_at=?
+                       WHERE id=? AND enriched=0""",
+                    (count, next_retry_at(count) if count < 3 else None, row["id"]),
+                )
+    return completed
 
 def normalize(payload):
     uri = payload.get("data", {}).get("uri") if isinstance(payload.get("data"), dict) else None
@@ -198,6 +266,8 @@ def store(payload):
             (event_id, now, username, title, body, link, canonical, enriched, details_json),
         )
         inserted = cursor.rowcount > 0
+        if inserted and not enriched and tweet_id and tweet_id.isdigit() and FXTWITTER_ENABLED:
+            db.execute("UPDATE events SET next_retry_at=? WHERE id=?", (next_retry_at(0), event_id))
         if not inserted and enriched:
             db.execute(
                 "UPDATE events SET username=?, body=?, link=?, enriched=1, details=? "
