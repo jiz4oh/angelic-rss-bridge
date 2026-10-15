@@ -85,14 +85,14 @@ def fetch_tweet(tweet_id):
 
 def normalize(payload):
     uri = payload.get("data", {}).get("uri") if isinstance(payload.get("data"), dict) else None
-    match = re.match(r"^/(?:@)?([A-Za-z0-9_]{1,15})/status/\d+(?:[/?#].*)?$", uri) if isinstance(uri, str) else None
+    match = re.match(r"^/(?:@)?([A-Za-z0-9_]{1,15})/status/(\d+)(?:[/?#].*)?$", uri) if isinstance(uri, str) else None
     username = match.group(1) if match else first(payload, ("screen_name", "username"))
     title = first(payload, ("title", "screen_name", "username", "name")) or "X notification"
     body = first(payload, ("body", "text", "message", "content")) or json.dumps(payload, ensure_ascii=False)
     link = first(payload, ("url", "link", "uri", "target_url"))
     if isinstance(link, str) and link.startswith("/"):
         link = "https://x.com" + link
-    tweet_id = first(payload, ("tweet_id", "status_id", "rest_id"))
+    tweet_id = first(payload, ("tweet_id", "status_id", "rest_id")) or (match.group(2) if match else None)
     if not link and tweet_id:
         link = f"https://x.com/{username or 'i'}/status/{tweet_id}"
     stable = tweet_id or first(payload, ("id", "notification_id"))
