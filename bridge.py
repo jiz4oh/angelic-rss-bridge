@@ -451,6 +451,7 @@ class Handler(BaseHTTPRequestHandler):
         print(f"{self.address_string()} - {fmt % args}", flush=True)
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
     with connect():
         pass
