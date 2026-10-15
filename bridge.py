@@ -247,7 +247,7 @@ def normalize(payload):
     event_id = stable or hashlib.sha256(canonical.encode()).hexdigest()
     return event_id, username, title, body, link, canonical, tweet_id
 
-def fxtwitter_link(username, tweet_id):
+def tweet_link(username, tweet_id):
     if username and tweet_id and re.fullmatch(r"[A-Za-z0-9_]{1,15}", username) and str(tweet_id).isdigit():
         return f"https://x.com/{username}/status/{tweet_id}"
     return None
@@ -300,7 +300,7 @@ def description(body, details):
             author = {}
         name = str(author.get("name") or author.get("screen_name") or "Quoted post")
         handle = author.get("screen_name")
-        quote_link = fxtwitter_link(handle, quoted.get("id"))
+        quote_link = tweet_link(handle, quoted.get("id"))
         label = html.escape(name)
         if quote_link:
             label = f'<a href="{html.escape(quote_link, quote=True)}">{label}</a>'
@@ -369,7 +369,7 @@ def rss(username):
         handle = author.get("screen_name") or row["username"]
         display_name = str(author.get("name") or row["title"])
         tweet_id = status.get("id") or row["id"]
-        link = row["link"] or fxtwitter_link(handle, tweet_id) or ""
+        link = row["link"] or tweet_link(handle, tweet_id) or ""
         body = row["body"]
         title = f"{display_name}: {body.replace(chr(10), ' ').strip()}"
         if status.get("replying_to"):
