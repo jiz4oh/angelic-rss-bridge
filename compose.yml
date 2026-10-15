@@ -10,6 +10,7 @@ services:
       FXTWITTER_ENABLED: ${FXTWITTER_ENABLED:-true}
       FXTWITTER_API_BASE: ${FXTWITTER_API_BASE:-https://api.fxtwitter.com}
       FXTWITTER_TIMEOUT: ${FXTWITTER_TIMEOUT:-5}
+      FXTWITTER_RETRY_BASE_SECONDS: ${FXTWITTER_RETRY_BASE_SECONDS:-300}
     volumes:
       - ./data/bridge:/data
     ports:
@@ -19,6 +20,19 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+
+  retry-worker:
+    image: ghcr.io/jiz4oh/angelic-rss-bridge:latest
+    restart: unless-stopped
+    command: ["python", "/app/worker.py"]
+    environment:
+      FXTWITTER_ENABLED: ${FXTWITTER_ENABLED:-true}
+      FXTWITTER_API_BASE: ${FXTWITTER_API_BASE:-https://api.fxtwitter.com}
+      FXTWITTER_TIMEOUT: ${FXTWITTER_TIMEOUT:-5}
+      FXTWITTER_WORKER_INTERVAL: ${FXTWITTER_WORKER_INTERVAL:-60}
+      FXTWITTER_RETRY_BASE_SECONDS: ${FXTWITTER_RETRY_BASE_SECONDS:-300}
+    volumes:
+      - ./data/bridge:/data
 
   angelic-angel:
     image: ghcr.io/jiz4oh/angelic-angel:latest
