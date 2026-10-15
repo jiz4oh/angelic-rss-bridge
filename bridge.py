@@ -391,7 +391,7 @@ def rss(username):
         item.append("</item>")
         items.append("".join(item))
     feed_title = f"{FEED_TITLE} - @{username}"
-    feed_link = f"https://fxtwitter.com/{username}"
+    feed_link = f"https://x.com/{username}"
     return (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<rss version="2.0"><channel>'
