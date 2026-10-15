@@ -12,6 +12,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse, quote
 import re
 import time
+import uuid
+from pathlib import Path
+from datetime import timedelta
 
 DB_PATH = os.getenv("DB_PATH", "/data/bridge.db")
 HOST = os.getenv("HOST", "0.0.0.0")
@@ -25,8 +28,8 @@ FXTWITTER_TIMEOUT = float(os.getenv("FXTWITTER_TIMEOUT", "5"))
 FXTWITTER_WORKER_INTERVAL = int(os.getenv("FXTWITTER_WORKER_INTERVAL", "60"))
 FXTWITTER_RETRY_BASE_SECONDS = int(os.getenv("FXTWITTER_RETRY_BASE_SECONDS", "300"))
 
-def connect():
-    db = sqlite3.connect(DB_PATH)
+def connect(db_path=None):
+    db = sqlite3.connect(db_path or DB_PATH, timeout=30)
     db.row_factory = sqlite3.Row
     db.execute("""CREATE TABLE IF NOT EXISTS events (
         id TEXT PRIMARY KEY,
@@ -39,13 +42,16 @@ def connect():
         enriched INTEGER NOT NULL DEFAULT 0,
         details TEXT,
         retry_count INTEGER NOT NULL DEFAULT 0,
-        next_retry_at TEXT
+        next_retry_at TEXT,
+        retry_claim TEXT
     )""")
     columns = {row["name"] for row in db.execute("PRAGMA table_info(events)")}
     if "retry_count" not in columns:
         db.execute("ALTER TABLE events ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0")
     if "next_retry_at" not in columns:
         db.execute("ALTER TABLE events ADD COLUMN next_retry_at TEXT")
+    if "retry_claim" not in columns:
+        db.execute("ALTER TABLE events ADD COLUMN retry_claim TEXT")
     db.execute(
         "CREATE INDEX IF NOT EXISTS idx_events_username_received_at "
         "ON events(username COLLATE NOCASE, received_at DESC)"
@@ -97,59 +103,119 @@ def fetch_tweet(tweet_id):
     return None
 
 def next_retry_at(retry_count):
-    from datetime import timedelta
     return (datetime.now(timezone.utc) + timedelta(
         seconds=FXTWITTER_RETRY_BASE_SECONDS * (2 ** retry_count)
     )).isoformat()
 
+
+def event_tweet_id(row):
+    """Resolve tweet IDs from the same notification format used at ingestion."""
+    try:
+        payload = json.loads(row["payload"])
+        if isinstance(payload, dict):
+            tweet_id = normalize(payload)[-1]
+            if tweet_id and tweet_id.isdigit():
+                return tweet_id
+    except (ValueError, TypeError, AttributeError):
+        pass
+    event_id = str(row["id"])
+    return event_id if event_id.isdigit() else None
+
+
+def pending_events(db_path=None, *, manual=False, limit=20):
+    with connect(db_path) as db:
+        now = datetime.now(timezone.utc).isoformat()
+        sql = """SELECT id, payload FROM events
+                 WHERE enriched=0 AND (retry_claim IS NULL OR retry_claim<=?)"""
+        params = [now]
+        if not manual:
+            sql += " AND retry_count<3 AND next_retry_at IS NOT NULL AND next_retry_at<=?"
+            params.append(now)
+        sql += " ORDER BY received_at LIMIT ?"
+        params.append(limit)
+        return [row for row in db.execute(sql, params).fetchall() if event_tweet_id(row)]
+
+
+def enrich_event(event_id, *, db_path=None, manual=False):
+    """Atomic claim, fetch and update shared by the worker and manual task.
+
+    Returns 'updated', 'failed', or 'skipped'. Manual attempts do not
+    consume the automatic retry budget.
+    """
+    token = uuid.uuid4().hex
+    now = datetime.now(timezone.utc).isoformat()
+    with connect(db_path) as db:
+        sql = """UPDATE events SET retry_claim=?
+                 WHERE id=? AND enriched=0
+                 AND (retry_claim IS NULL OR retry_claim<=?)"""
+        params = [token, event_id, now]
+        if not manual:
+            sql += " AND retry_count<3 AND next_retry_at IS NOT NULL AND next_retry_at<=?"
+            params.append(now)
+        claimed = db.execute(sql, params).rowcount
+        if not claimed:
+            return "skipped"
+        row = db.execute("SELECT id,payload,retry_count FROM events WHERE id=?", (event_id,)).fetchone()
+
+    tweet_id = event_tweet_id(row)
+    if not tweet_id or not FXTWITTER_ENABLED:
+        with connect(db_path) as db:
+            db.execute("UPDATE events SET retry_claim=NULL WHERE id=? AND retry_claim=?", (event_id, token))
+        return "skipped"
+
+    details = fetch_tweet(tweet_id)
+    with connect(db_path) as db:
+        if details:
+            changed = db.execute(
+                """UPDATE events SET username=COALESCE(?,username), body=?,
+                   link=COALESCE(?,link), details=?, enriched=1,
+                   next_retry_at=NULL, retry_claim=NULL
+                   WHERE id=? AND enriched=0 AND retry_claim=?""",
+                (details["username"], details["body"], details["link"],
+                 json.dumps(details["status"], ensure_ascii=False), event_id, token),
+            ).rowcount
+            return "updated" if changed else "skipped"
+        if manual:
+            db.execute(
+                "UPDATE events SET retry_claim=NULL WHERE id=? AND retry_claim=?",
+                (event_id, token),
+            )
+        else:
+            count = row["retry_count"] + 1
+            db.execute(
+                """UPDATE events SET retry_count=?, next_retry_at=?, retry_claim=NULL
+                   WHERE id=? AND enriched=0 AND retry_claim=?""",
+                (count, next_retry_at(count) if count < 3 else None, event_id, token),
+            )
+    return "failed"
+
+
 def retry_pending(batch_size=20):
     if not FXTWITTER_ENABLED:
         return 0
+    updated = 0
+    for row in pending_events(limit=batch_size):
+        updated += enrich_event(row["id"]) == "updated"
+    return updated
+
+
+def schedule_legacy():
+    """Schedule old unenriched rows once without rearming exhausted attempts."""
     with connect() as db:
         rows = db.execute(
-            """SELECT id, payload, retry_count FROM events
-               WHERE enriched=0 AND retry_count < 3
-               AND next_retry_at IS NOT NULL AND next_retry_at <= ?
-               ORDER BY next_retry_at LIMIT ?""",
-            (datetime.now(timezone.utc).isoformat(), batch_size),
+            """SELECT id, payload FROM events
+               WHERE enriched=0 AND retry_count=0
+               AND next_retry_at IS NULL AND retry_claim IS NULL"""
         ).fetchall()
-    completed = 0
-    for row in rows:
-        try:
-            payload = json.loads(row["payload"])
-            tweet_id = normalize(payload)[-1] if isinstance(payload, dict) else None
-        except (ValueError, TypeError, AttributeError):
-            tweet_id = None
-        if not tweet_id or not tweet_id.isdigit():
-            continue
-        with connect() as db:
-            claimed = db.execute(
-                """UPDATE events SET next_retry_at=?
-                   WHERE id=? AND enriched=0 AND retry_count=?
-                   AND next_retry_at IS NOT NULL AND next_retry_at<=?""",
-                (next_retry_at(0), row["id"], row["retry_count"], datetime.now(timezone.utc).isoformat()),
-            ).rowcount
-        if not claimed:
-            continue
-        details = fetch_tweet(tweet_id)
-        with connect() as db:
-            if details:
-                changed = db.execute(
-                    """UPDATE events SET username=COALESCE(?,username), body=?,
-                       link=COALESCE(?,link), details=?, enriched=1, next_retry_at=NULL
-                       WHERE id=? AND enriched=0""",
-                    (details["username"], details["body"], details["link"],
-                     json.dumps(details["status"], ensure_ascii=False), row["id"]),
-                ).rowcount
-                completed += changed
-            else:
-                count = row["retry_count"] + 1
+        for row in rows:
+            if event_tweet_id(row):
                 db.execute(
-                    """UPDATE events SET retry_count=?, next_retry_at=?
-                       WHERE id=? AND enriched=0""",
-                    (count, next_retry_at(count) if count < 3 else None, row["id"]),
+                    """UPDATE events SET next_retry_at=?
+                       WHERE id=? AND enriched=0 AND retry_count=0
+                       AND next_retry_at IS NULL AND retry_claim IS NULL""",
+                    (next_retry_at(0), row["id"]),
                 )
-    return completed
+
 
 def normalize(payload):
     uri = payload.get("data", {}).get("uri") if isinstance(payload.get("data"), dict) else None
@@ -247,7 +313,7 @@ def store(payload):
     now = datetime.now(timezone.utc).isoformat()
     with connect() as db:
         row = db.execute("SELECT enriched FROM events WHERE id = ?", (event_id,)).fetchone()
-        if row and row["enriched"]:
+        if row:
             return event_id, False
 
     details = fetch_tweet(tweet_id)
@@ -268,12 +334,7 @@ def store(payload):
         inserted = cursor.rowcount > 0
         if inserted and not enriched and tweet_id and tweet_id.isdigit() and FXTWITTER_ENABLED:
             db.execute("UPDATE events SET next_retry_at=? WHERE id=?", (next_retry_at(0), event_id))
-        if not inserted and enriched:
-            db.execute(
-                "UPDATE events SET username=?, body=?, link=?, enriched=1, details=? "
-                "WHERE id=? AND enriched=0",
-                (username, body, link, details_json, event_id),
-            )
+
     return event_id, inserted
 
 def rss(username):
