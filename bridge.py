@@ -43,7 +43,8 @@ def connect(db_path=None):
         details TEXT,
         retry_count INTEGER NOT NULL DEFAULT 0,
         next_retry_at TEXT,
-        retry_claim TEXT
+        retry_claim TEXT,
+        retry_claim_until TEXT
     )""")
     columns = {row["name"] for row in db.execute("PRAGMA table_info(events)")}
     if "retry_count" not in columns:
@@ -52,6 +53,8 @@ def connect(db_path=None):
         db.execute("ALTER TABLE events ADD COLUMN next_retry_at TEXT")
     if "retry_claim" not in columns:
         db.execute("ALTER TABLE events ADD COLUMN retry_claim TEXT")
+    if "retry_claim_until" not in columns:
+        db.execute("ALTER TABLE events ADD COLUMN retry_claim_until TEXT")
     db.execute(
         "CREATE INDEX IF NOT EXISTS idx_events_username_received_at "
         "ON events(username COLLATE NOCASE, received_at DESC)"
@@ -126,7 +129,7 @@ def pending_events(db_path=None, *, manual=False, limit=20):
     with connect(db_path) as db:
         now = datetime.now(timezone.utc).isoformat()
         sql = """SELECT id, payload FROM events
-                 WHERE enriched=0 AND (retry_claim IS NULL OR retry_claim<=?)"""
+                 WHERE enriched=0 AND (retry_claim IS NULL OR retry_claim_until<=?)"""
         params = [now]
         if not manual:
             sql += " AND retry_count<3 AND next_retry_at IS NOT NULL AND next_retry_at<=?"
@@ -143,12 +146,13 @@ def enrich_event(event_id, *, db_path=None, manual=False):
     consume the automatic retry budget.
     """
     token = uuid.uuid4().hex
+    lease_until = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
     now = datetime.now(timezone.utc).isoformat()
     with connect(db_path) as db:
-        sql = """UPDATE events SET retry_claim=?
+        sql = """UPDATE events SET retry_claim=?, retry_claim_until=?
                  WHERE id=? AND enriched=0
-                 AND (retry_claim IS NULL OR retry_claim<=?)"""
-        params = [token, event_id, now]
+                 AND (retry_claim IS NULL OR retry_claim_until<=?)"""
+        params = [token, lease_until, event_id, now]
         if not manual:
             sql += " AND retry_count<3 AND next_retry_at IS NOT NULL AND next_retry_at<=?"
             params.append(now)
@@ -160,7 +164,7 @@ def enrich_event(event_id, *, db_path=None, manual=False):
     tweet_id = event_tweet_id(row)
     if not tweet_id or not FXTWITTER_ENABLED:
         with connect(db_path) as db:
-            db.execute("UPDATE events SET retry_claim=NULL WHERE id=? AND retry_claim=?", (event_id, token))
+            db.execute("UPDATE events SET retry_claim=NULL, retry_claim_until=NULL WHERE id=? AND retry_claim=?", (event_id, token))
         return "skipped"
 
     details = fetch_tweet(tweet_id)
@@ -169,7 +173,7 @@ def enrich_event(event_id, *, db_path=None, manual=False):
             changed = db.execute(
                 """UPDATE events SET username=COALESCE(?,username), body=?,
                    link=COALESCE(?,link), details=?, enriched=1,
-                   next_retry_at=NULL, retry_claim=NULL
+                   next_retry_at=NULL, retry_claim=NULL, retry_claim_until=NULL
                    WHERE id=? AND enriched=0 AND retry_claim=?""",
                 (details["username"], details["body"], details["link"],
                  json.dumps(details["status"], ensure_ascii=False), event_id, token),
@@ -177,13 +181,13 @@ def enrich_event(event_id, *, db_path=None, manual=False):
             return "updated" if changed else "skipped"
         if manual:
             db.execute(
-                "UPDATE events SET retry_claim=NULL WHERE id=? AND retry_claim=?",
+                "UPDATE events SET retry_claim=NULL, retry_claim_until=NULL WHERE id=? AND retry_claim=?",
                 (event_id, token),
             )
         else:
             count = row["retry_count"] + 1
             db.execute(
-                """UPDATE events SET retry_count=?, next_retry_at=?, retry_claim=NULL
+                """UPDATE events SET retry_count=?, next_retry_at=?, retry_claim=NULL, retry_claim_until=NULL
                    WHERE id=? AND enriched=0 AND retry_claim=?""",
                 (count, next_retry_at(count) if count < 3 else None, event_id, token),
             )
