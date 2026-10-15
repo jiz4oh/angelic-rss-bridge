@@ -82,6 +82,7 @@ def fetch_tweet(tweet_id):
     if not FXTWITTER_ENABLED or not tweet_id or not tweet_id.isdigit():
         return None
     for attempt in range(3):
+        logging.info("FxTwitter request tweet_id=%s attempt=%d/3", tweet_id, attempt + 1)
         try:
             request = Request(
                 f"{FXTWITTER_API_BASE}/2/status/{tweet_id}",
@@ -91,17 +92,21 @@ def fetch_tweet(tweet_id):
                 result = json.load(response)
             status = result.get("status")
             if result.get("code") != 200 or not isinstance(status, dict):
+                logging.warning("FxTwitter rejected tweet_id=%s code=%s", tweet_id, result.get("code"))
                 return None
             if str(status.get("id")) != tweet_id or not isinstance(status.get("text"), str):
+                logging.warning("FxTwitter invalid status tweet_id=%s", tweet_id)
                 return None
             author = status.get("author") or {}
             username = author.get("screen_name") if isinstance(author, dict) else None
             if username and not re.fullmatch(r"[A-Za-z0-9_]{1,15}", username):
                 username = None
+            logging.info("FxTwitter success tweet_id=%s attempt=%d/3", tweet_id, attempt + 1)
             return {"body": status["text"], "username": username, "link": status.get("url"), "status": status}
         except (OSError, ValueError, TypeError, KeyError) as exc:
             logging.warning("FxTwitter %s attempt %s/3: %s", tweet_id, attempt + 1, exc)
             if attempt < 2:
+                logging.info("FxTwitter backoff tweet_id=%s seconds=%d", tweet_id, 2 ** attempt)
                 time.sleep(2 ** attempt)
     return None
 
@@ -167,6 +172,7 @@ def enrich_event(event_id, *, db_path=None, manual=False):
             db.execute("UPDATE events SET retry_claim=NULL, retry_claim_until=NULL WHERE id=? AND retry_claim=?", (event_id, token))
         return "skipped"
 
+    logging.info("Enrichment start source=%s id=%s tweet_id=%s worker_attempt=%d/3", "manual" if manual else "worker", event_id, tweet_id, row["retry_count"] + 1)
     details = fetch_tweet(tweet_id)
     with connect(db_path) as db:
         if details:
@@ -178,14 +184,17 @@ def enrich_event(event_id, *, db_path=None, manual=False):
                 (details["username"], details["body"], details["link"],
                  json.dumps(details["status"], ensure_ascii=False), event_id, token),
             ).rowcount
+            logging.info("Enrichment success source=%s tweet_id=%s updated=%s", "manual" if manual else "worker", tweet_id, bool(changed))
             return "updated" if changed else "skipped"
         if manual:
+            logging.warning("Enrichment failed source=manual tweet_id=%s retry_budget_unchanged=true", tweet_id)
             db.execute(
                 "UPDATE events SET retry_claim=NULL, retry_claim_until=NULL WHERE id=? AND retry_claim=?",
                 (event_id, token),
             )
         else:
             count = row["retry_count"] + 1
+            logging.warning("Enrichment failed source=worker tweet_id=%s attempt=%d/3 next_retry_at=%s", tweet_id, count, next_retry_at(count) if count < 3 else "exhausted")
             db.execute(
                 """UPDATE events SET retry_count=?, next_retry_at=?, retry_claim=NULL, retry_claim_until=NULL
                    WHERE id=? AND enriched=0 AND retry_claim=?""",
@@ -320,8 +329,10 @@ def store(payload):
         if row:
             return event_id, False
 
+    logging.info("Enrichment start source=webhook tweet_id=%s", tweet_id)
     details = fetch_tweet(tweet_id)
     enriched = 1 if details else 0
+    logging.info("Enrichment finish source=webhook tweet_id=%s enriched=%s", tweet_id, bool(enriched))
     details_json = json.dumps(details["status"], ensure_ascii=False) if details else None
     if details:
         username = details["username"] or username
