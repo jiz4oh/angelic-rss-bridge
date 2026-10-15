@@ -99,6 +99,10 @@ docker compose logs -f retry-worker
 
 Configuration: `FXTWITTER_WORKER_INTERVAL` (default 60 seconds) and `FXTWITTER_RETRY_BASE_SECONDS` (default 300 seconds). Two extra SQLite columns, `retry_count` and `next_retry_at`, are added automatically. Back up your database before updating.
 
+The worker and one-time script now share `bridge.enrich_event()` for tweet ID lookup, SQLite claiming, FxTwitter fetching, and success/failure updates. An expiring claim prevents normal concurrent processing; a stopped worker can be retried after the lease expires. Manual runs can explicitly retry exhausted records without consuming or resetting the automatic retry budget. All enrichment attempts print tweet ID, source, attempt, backoff, and outcome to container logs; no full notification payload is logged.
+
+View worker retry logs with `docker compose logs -f retry-worker`, or live webhook request attempts with `docker compose logs -f bridge`.
+
 ## One-time historical enrichment
 
 Backfill previously received notifications whose `enriched` field is 0, reusing the normal FxTwitter lookup and RSS rendering. Run this after deploying an image that contains `/app/scripts/enrich_history.py`. The task is not scheduled.
