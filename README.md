@@ -87,6 +87,14 @@ This version requires a fresh database schema with `enriched` and `details` colu
 
 FxTwitter response details are stored as JSON in SQLite. The RSS `description` contains escaped HTML: full post text, HTTPS image tags, MP4 video tags, and a blockquote with the quoted author's name and text. Quoted-post media is not expanded. If enrichment fails, the feed retains the notification text without media.
 
+## RSSHub-style feed output for RSStT
+
+The per-account RSS channel links to `https://fxtwitter.com/<username>`. Each item uses a FxTwitter permalink when a valid author handle and numeric tweet ID are available, falling back to the notification URL otherwise. The RSS GUID remains the stable tweet ID to prevent duplicate Telegram posts when the link changes.
+
+Enriched items include the author's display name and text in the title, the original tweet timestamp, an author field, hashtag categories, HTML images with alt text, and direct MP4 video sources selected from FxTwitter's variants. Replies receive a title prefix. Quoted posts show the quoted author's name, text, and a FxTwitter link, but not quoted media.
+
+RSStT can extract media from HTML descriptions; enable media for the subscription. This bridge does not download or transcode media, and RSStT delivery depends on media URL accessibility. Notifications without FxTwitter details still appear as text-only RSS entries.
+
 ## Updating
 
 Pull new images and recreate the containers:
