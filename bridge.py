@@ -368,18 +368,21 @@ def rss(username):
         if not isinstance(author, dict):
             author = {}
         handle = author.get("screen_name") or row["username"]
-        display_name = str(author.get("name") or row["title"])
         tweet_id = status.get("id") or row["id"]
         link = row["link"] or tweet_link(handle, tweet_id) or ""
         body = row["body"]
-        title = f"{display_name}: {body.replace(chr(10), ' ').strip()}"
-        if status.get("replying_to"):
-            title = "↩️ " + title
+        try:
+            original = json.loads(row["payload"])
+            notification_body = original.get("body") if isinstance(original, dict) else None
+        except (ValueError, TypeError):
+            notification_body = None
+        title_source = notification_body if isinstance(notification_body, str) and notification_body.strip() else body
+        title = " ".join(title_source.split())[:100]
         dt = tweet_date(status, datetime.fromisoformat(row["received_at"]))
         item = [
             "<item>",
             f'<guid isPermaLink="false">{html.escape(row["id"])}</guid>',
-            f"<title>{html.escape(title[:240])}</title>",
+            f"<title>{html.escape(title)}</title>",
             f"<description>{html.escape(description(body, row['details']))}</description>",
             f"<pubDate>{format_datetime(dt)}</pubDate>",
         ]
