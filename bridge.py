@@ -85,7 +85,7 @@ def fetch_tweet(tweet_id):
 
 def normalize(payload):
     uri = payload.get("data", {}).get("uri") if isinstance(payload.get("data"), dict) else None
-    match = re.match(r"^/(?:@)?([A-Za-z0-9_]{1,15})/status/\\d+(?:[/?#].*)?$", uri) if isinstance(uri, str) else None
+    match = re.match(r"^/(?:@)?([A-Za-z0-9_]{1,15})/status/\d+(?:[/?#].*)?$", uri) if isinstance(uri, str) else None
     username = match.group(1) if match else first(payload, ("screen_name", "username"))
     title = first(payload, ("title", "screen_name", "username", "name")) or "X notification"
     body = first(payload, ("body", "text", "message", "content")) or json.dumps(payload, ensure_ascii=False)
