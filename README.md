@@ -83,6 +83,22 @@ When a notification contains a tweet ID, the bridge looks up the full post text 
 
 This version requires a fresh database schema with `enriched` and `details` columns. Existing databases are not migrated automatically.
 
+## Automatic FxTwitter retry worker
+
+The webhook attempts a transiently failing FxTwitter request up to **three times total**, waiting 1 and 2 seconds between attempts. If all attempts fail, it immediately stores the original notification as `enriched=0`.
+
+A separate `retry-worker` container checks SQLite every **60 seconds**, and schedules another enrichment after **5, 10, and 20 minutes** (up to three worker runs per event, with at most three HTTP attempts per run). Successful enrichment updates the same event in place. Persistent failures keep the original notification; the worker stops retrying that event. Existing unenriched historical notifications with identifiable tweet IDs are scheduled on worker startup. The schedule survives container restarts.
+
+Deploy the new image and compose configuration:
+
+```sh
+docker compose pull bridge retry-worker
+docker compose up -d bridge retry-worker
+docker compose logs -f retry-worker
+```
+
+Configuration: `FXTWITTER_WORKER_INTERVAL` (default 60 seconds) and `FXTWITTER_RETRY_BASE_SECONDS` (default 300 seconds). Two extra SQLite columns, `retry_count` and `next_retry_at`, are added automatically. Back up your database before updating.
+
 ## One-time historical enrichment
 
 Backfill previously received notifications whose `enriched` field is 0, reusing the normal FxTwitter lookup and RSS rendering. Run this after deploying an image that contains `/app/scripts/enrich_history.py`. The task is not scheduled.
