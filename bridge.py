@@ -249,7 +249,7 @@ def normalize(payload):
 
 def fxtwitter_link(username, tweet_id):
     if username and tweet_id and re.fullmatch(r"[A-Za-z0-9_]{1,15}", username) and str(tweet_id).isdigit():
-        return f"https://fxtwitter.com/{username}/status/{tweet_id}"
+        return f"https://x.com/{username}/status/{tweet_id}"
     return None
 
 def media_html(status):
@@ -369,7 +369,7 @@ def rss(username):
         handle = author.get("screen_name") or row["username"]
         display_name = str(author.get("name") or row["title"])
         tweet_id = status.get("id") or row["id"]
-        link = fxtwitter_link(handle, tweet_id) or row["link"] or ""
+        link = row["link"] or fxtwitter_link(handle, tweet_id) or ""
         body = row["body"]
         title = f"{display_name}: {body.replace(chr(10), ' ').strip()}"
         if status.get("replying_to"):
