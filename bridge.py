@@ -124,10 +124,10 @@ def retry_pending(batch_size=20):
             continue
         with connect() as db:
             claimed = db.execute(
-                """UPDATE events SET next_retry_at=NULL
+                """UPDATE events SET next_retry_at=?
                    WHERE id=? AND enriched=0 AND retry_count=?
                    AND next_retry_at IS NOT NULL AND next_retry_at<=?""",
-                (row["id"], row["retry_count"], datetime.now(timezone.utc).isoformat()),
+                (next_retry_at(0), row["id"], row["retry_count"], datetime.now(timezone.utc).isoformat()),
             ).rowcount
         if not claimed:
             continue
